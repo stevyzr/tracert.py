@@ -1,106 +1,84 @@
-﻿import socket
+"""
+	Try to isolate code that can send ICMP packets
 
-def main(dest):
-    
-    destIP =  socket.gethostbyname(dest)
-    icmp = socket.getprotobyname('icmp')
-    udp = socket.getprotobyname('udp')
-    ttl = 1
-    port = 33434
-    max_hop = 64
-    #print("init")
-    print(destIP)
+	Used library: socket
 
-    while True:
-        # Open connection
-        recv_sckt = socket.socket(socket.AF_INET,socket.SOCK_RAW, socket.IPPROTO_ICMP)
-        send_sckt = socket.socket(socket.AF_INET,socket.SOCK_DGRAM, udp)
-        send_sckt.setsockopt(socket.SOL_IP, socket.IP_TTL, ttl)
-        recv_sckt.setsockopt(socket.SOL_IP, socket.IP_HDRINCL, 1)
-        try:
-            recv_sckt.bind(('192.168.1.7', port))
-        except IOError:
-            print("fail to bind")
+	The code is based on ping.py at https://gist.github.com/pklaus/856268
+"""
 
-        send_sckt.sendto(bytes(0), (destIP, port)) 
-        curr_addr = None
-        curr_name = None
-        #print("enter loop")
-        #print(ttl)
-
-
-        try:
-            
-            #print("start listen")
-            recv_sckt.settimeout(100.0)
-            data,curr_addr = recv_sckt.recvfrom(2048)
-            
-            #print(data)
-            #print("Current address:", curr_addr)
-                #Assign the value of the 2nd element in tuple to curr_addr
-                # _, means that value of the 1st element is ignored
-            curr_addr = curr_addr[0]
-            #print (curr_addr)
-
-            # try to convert IP to domain names
-            try:
-                curr_name = socket.gethostbyaddr(curr_addr)[0]
-            except socket.error:
-                curr_name = "Unknown"
-
-        except socket.error:
-            pass
-        finally:
-            send_sckt.close()
-            recv_sckt.close()
-
-        if curr_addr is not None:
-            curr_host = "%s (%s)" % (curr_name, curr_addr)
-        else:
-            curr_host = "*"
-
-        # print data
-        
-        print ("%d \t %s" % (ttl, curr_host))
-        ttl += 1
-        
-        # break if get result or reach max hop
-        if curr_addr == destIP or ttl > max_hop:
-            break
-
-
-        pass # this is just a placeholder
-
-
-if __name__== "__main__":
-    print ("start")
-    main('tieba.baidu.com')
 import socket
+import struct
 
-UDP_IP = "192.168.1.7"
-UDP_PORT = 15005
-MESSAGE = "Hello, World!"
+ICMP_ECHO_REQUEST = 8
+ICMP_CODE = socket.getprotobyname('icmp')
 
-print ("UDP target IP:", UDP_IP)
-print ("UDP target port:", UDP_PORT)
-print ("message:", MESSAGE)
+def checksum(src_str):  
+	# according to the original author, this function might not be very reliable, rewrite if possible
+	sum = 0
+	count_to = (len(src_str) / 2) * 2
+	count = 0
+	while count < count_to:
+		this_val = ord(str(src_str[count + 1])) * 256 + ord(str(src_str[count]))
+		sum = sum + this_val
+		sum = sum & 0xffffffff #
+		count = count + 2
+	if count_to < len(src_str):
+		sum = sum + ord(src_str[len(source_string) - 1])
+		sum = sum & 0xffffffff #
+	sum = (sum >> 16) + (sum & 0xffff)
+	sum = sum + (sum >> 16)
+	answer = ~sum
+	answer = answer & 0xffff
+	# Swap bytes. Bugger me if I know why.
+	answer = answer >> 8 | (answer << 8 & 0xff00)
+	return answer
 
-sock = socket.socket(socket.AF_INET,socket.SOCK_RAW, socket.getprotobyname('icmp')) # UDP
-sock.sendto(bytes(MESSAGE, "utf-8"), (UDP_IP, UDP_PORT))﻿import socket
+def create_packet(id):
+	"""Create a new echo request packet based on the given "id"."""
+	# Header is type (8), code (8), checksum (16), id (16), sequence (16)
+	header = struct.pack('bbHHh', ICMP_ECHO_REQUEST, 0, 0, id, 1)
+	# ttl is at 0x16, id is at 0x26 0x36
 
-UDP_IP = "192.168.1.7"
-UDP_PORT = 15005
-icmp = socket.getprotobyname('icmp')
-udp = socket.getprotobyname('udp')
+	data = 64 * "A"
+	
+	#print(header + data)
+	# Calculate the checksum on the data and the dummy header.
+	my_checksum = checksum(header.decode() + data)
+	# Now that we have the right checksum, we put that in. It's just easier
+	# to make up a new header than to stuff it into the dummy.
+	header = struct.pack('bbHHh', ICMP_ECHO_REQUEST, 0,	socket.htons(my_checksum), id, 1)
+	return header + data.encode('utf-8')
 
-sock = socket.socket(socket.AF_INET,socket.SOCK_RAW, icmp)
-sock.bind(("",UDP_PORT))
 
-while True:
-    data, addr = sock.recvfrom(1024)
-    if addr[0] != "192.168.1.7":
-        print ("Recieved message:", data)
-        print (addr[0])= packet[sent:]
+def send_one_pack(dest_addr, id, ttl):
+    """
+    Sends one ping to the given "dest_addr" which can be an ip or hostname.
+    "timeout" can be any integer or float except negatives and zero.
+    Returns either the delay (in seconds) or None on timeout and an invalid
+    address, respectively.
+    """
+    try:
+        my_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, ICMP_CODE)
+        my_socket.setsockopt(socket.SOL_IP, socket.IP_TTL, ttl)
+    except socket.error as e:
+        if e.errno in ERROR_DESCR:
+            # Operation not permitted
+            raise socket.error(''.join((e.args[1], ERROR_DESCR[e.errno])))
+        raise # raise the original error
+    try:
+        host = socket.gethostbyname(dest_addr)
+    except socket.gaierror:
+        return
+    # Maximum for an unsigned short int c object counts to 65535 so
+    # we have to sure that our packet id is not greater than that.
+    packet_id = id
+    packet = create_packet(packet_id)
+    sent = my_socket.sendto(packet, (dest_addr, 1))
+    #while packet:
+        # The icmp protocol does not use a port, but the function
+        # below expects it, so we just give it a dummy port.
+        # sent = my_socket.sendto(packet, (dest_addr, 1))
+        #packet = packet[sent:]
     delay = 0
     my_socket.close()
     return delay
